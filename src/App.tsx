@@ -9,6 +9,7 @@ import { LossCalculator } from './components/sections/LossCalculator';
 import { OneClickReminder } from './components/sections/OneClickReminder';
 import { PublicBooking } from './components/sections/PublicBooking';
 import { PackageBuilder } from './components/sections/PackageBuilder';
+import { AnatomyStorytelling } from './components/sections/AnatomyStorytelling';
 import { ClientBentoGrid } from './components/sections/ClientBentoGrid';
 import { FinancesTeam } from './components/sections/FinancesTeam';
 import { HowItWorks } from './components/sections/HowItWorks';
@@ -55,7 +56,10 @@ export const App: React.FC = () => {
         {/* 7. Pacotes Personalizados com Construtor Interativo */}
         <PackageBuilder />
 
-        {/* 8. Ficha Técnica e Clientes em Bento Grid */}
+        {/* 8. Scroll Storytelling: Anatomia de um Atendimento */}
+        <AnatomyStorytelling />
+
+        {/* 9. Ficha Técnica e Clientes em Bento Grid */}
         <ClientBentoGrid />
 
         {/* 9. Financeiro e Gestão de Comissões de Equipe */}

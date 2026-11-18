@@ -20,6 +20,7 @@ export const ClientBentoGrid: React.FC = () => {
 
   return (
     <section
+      id="ficha-tecnica"
       className="py-24 sm:py-32 bg-ivory relative grain-overlay overflow-hidden"
       aria-label="Ficha técnica de clientes e prontuário estético"
     >

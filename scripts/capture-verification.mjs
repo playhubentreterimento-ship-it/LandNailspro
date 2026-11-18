@@ -157,7 +157,6 @@ async function run() {
     // Capture screenshot
     const screenshot = await sendCdp("Page.captureScreenshot", {
       format: "png",
-      captureBeyondViewport: false,
     });
 
     const outPath = path.join(ARTIFACT_DIR, vp.file);
