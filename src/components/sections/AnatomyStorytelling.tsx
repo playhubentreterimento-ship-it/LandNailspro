@@ -1,79 +1,91 @@
-import React, { useRef, useState, useEffect, useMemo } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   motion,
   useScroll,
   useSpring,
   useTransform,
   useReducedMotion,
-  MotionValue,
 } from 'framer-motion';
 import { ArrowDown, Sparkles } from 'lucide-react';
 
-const TOTAL_FRAMES = 10;
+const TOTAL_FRAMES = 120;
 
-interface FrameLayerProps {
-  index: number;
-  smoothProgress: MotionValue<number>;
-  imageSrc: string;
-  isFirst: boolean;
-  onLoaded?: () => void;
+/**
+ * Ritmo: mapa por faixas não linear
+ * p 0–0.12    → fração dos frames 0–0.15 (dedo fechado inicial)
+ * p 0.12–0.55 → fração dos frames 0.15–0.50 (desmonte e abertura das camadas)
+ * p 0.55–0.80 → fração dos frames 0.50–0.75 (pilha aberta, tempo de leitura das legendas e selo)
+ * p 0.80–1.00 → fração dos frames 0.75–1.00 (pilha em repouso final)
+ */
+const RHYTHM_BANDS = [
+  { pStart: 0, pEnd: 0.12, fStart: 0, fEnd: 0.15 },
+  { pStart: 0.12, pEnd: 0.55, fStart: 0.15, fEnd: 0.5 },
+  { pStart: 0.55, pEnd: 0.8, fStart: 0.5, fEnd: 0.75 },
+  { pStart: 0.8, pEnd: 1.0, fStart: 0.75, fEnd: 1.0 },
+] as const;
+
+function mapProgressToFrame(p: number, totalFrames: number = TOTAL_FRAMES): number {
+  const clampedP = Math.max(0, Math.min(1, p));
+  let frameFraction = clampedP;
+  for (const band of RHYTHM_BANDS) {
+    if (clampedP >= band.pStart && clampedP <= band.pEnd) {
+      const bandRange = band.pEnd - band.pStart;
+      const t = bandRange === 0 ? 0 : (clampedP - band.pStart) / bandRange;
+      frameFraction = band.fStart + t * (band.fEnd - band.fStart);
+      break;
+    }
+  }
+  return Math.max(0, Math.min(totalFrames - 1, frameFraction * (totalFrames - 1)));
 }
 
-const FrameLayer: React.FC<FrameLayerProps> = ({
-  index,
-  smoothProgress,
-  imageSrc,
-  isFirst,
-  onLoaded,
-}) => {
-  // Crossfade contínuo: para f = p * 9, opacidade = max(0, 1 - |f - index|)
-  const opacity = useTransform(smoothProgress, (p) => {
-    const f = p * (TOTAL_FRAMES - 1);
-    const diff = Math.abs(f - index);
-    return Math.max(0, 1 - diff);
-  });
-
-  return (
-    <motion.img
-      src={imageSrc}
-      alt={
-        index === 0
-          ? 'Anatomia da unha com alongamento F1, mostrando as camadas do atendimento'
-          : ''
-      }
-      aria-hidden={index !== 0}
-      loading={isFirst || index === 1 ? 'eager' : 'lazy'}
-      fetchPriority={isFirst ? 'high' : 'low'}
-      onLoad={onLoaded}
-      style={{
-        opacity,
-        willChange: 'opacity',
-      }}
-      className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
-    />
-  );
-};
+function getFrameUrl(index: number, isMobile: boolean): string {
+  const folder = isMobile ? '/frames/anatomia/mobile' : '/frames/anatomia';
+  const num = String(index + 1).padStart(3, '0');
+  return `${folder}/frame-${num}.webp`;
+}
 
 export const AnatomyStorytelling: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const shouldReduceMotion = useReducedMotion();
+
   const [isMobile, setIsMobile] = useState(false);
   const [isNear, setIsNear] = useState(false);
-  const [firstLoaded, setFirstLoaded] = useState(false);
 
-  // Detecção de largura mobile (< 768px)
+  // Cache em memória das imagens decodificadas
+  const imagesRef = useRef<(HTMLImageElement | null)[]>(new Array(TOTAL_FRAMES).fill(null));
+  const rafRef = useRef<number | null>(null);
+
+  // Detecção responsiva (< 768px para mobile)
   useEffect(() => {
     const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
+      const mobile = window.innerWidth < 768;
+      setIsMobile((prev) => {
+        if (prev !== mobile) {
+          imagesRef.current = new Array(TOTAL_FRAMES).fill(null);
+        }
+        return mobile;
+      });
     };
     checkMobile();
     window.addEventListener('resize', checkMobile, { passive: true });
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // IntersectionObserver para lazy loading inteligente do conjunto de frames
+  // IntersectionObserver e verificação inicial para carregamento inteligente ao se aproximar (~1 tela)
   useEffect(() => {
     if (!containerRef.current) return;
+
+    const checkProximity = () => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.top <= window.innerHeight * 2 && rect.bottom >= -window.innerHeight) {
+        setIsNear(true);
+      }
+    };
+
+    checkProximity();
+
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
@@ -81,50 +93,24 @@ export const AnatomyStorytelling: React.FC = () => {
           observer.disconnect();
         }
       },
-      { rootMargin: '600px 0px' }
+      { rootMargin: '100% 0px' }
     );
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
 
-  // Lista de caminhos dos frames (desktop e mobile)
-  const framePaths = useMemo(() => {
-    const folder = isMobile ? '/frames/anatomia/mobile' : '/frames/anatomia';
-    return Array.from({ length: TOTAL_FRAMES }, (_, i) => {
-      const num = String(i + 1).padStart(2, '0');
-      return `${folder}/frame-01.webp`.replace('01', num);
-    });
-  }, [isMobile]);
+  // Busca a imagem carregada mais próxima do índice desejado
+  const getNearestImage = useCallback((index: number): HTMLImageElement | null => {
+    const images = imagesRef.current;
+    if (images[index]) return images[index];
+    for (let offset = 1; offset < TOTAL_FRAMES; offset++) {
+      if (index - offset >= 0 && images[index - offset]) return images[index - offset];
+      if (index + offset < TOTAL_FRAMES && images[index + offset]) return images[index + offset];
+    }
+    return null;
+  }, []);
 
-  // Pré-carregamento progressivo com new Image() e img.decode()
-  useEffect(() => {
-    if (!isNear || shouldReduceMotion) return;
-
-    let isCancelled = false;
-
-    const preloadSequential = async () => {
-      for (let i = 0; i < framePaths.length; i++) {
-        if (isCancelled) break;
-        const img = new Image();
-        img.src = framePaths[i];
-        if (img.decode) {
-          try {
-            await img.decode();
-          } catch {
-            // Continua mesmo se decode assíncrono falhar
-          }
-        }
-      }
-    };
-
-    preloadSequential();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [isNear, framePaths, shouldReduceMotion]);
-
-  // Framer Motion Scroll & Easing
+  // Framer Motion useScroll no container (550vh desktop / 420vh mobile)
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ['start start', 'end end'],
@@ -133,43 +119,179 @@ export const AnatomyStorytelling: React.FC = () => {
   const smoothProgress = useSpring(scrollYProgress, {
     stiffness: 120,
     damping: 30,
-    restDelta: 0.001,
+    restDelta: 0.0005,
   });
 
-  // Leve zoom (câmera lenta de 1.00 a 1.04)
-  const scale = useTransform(smoothProgress, [0, 1], [1.0, 1.04]);
+  // Função central de renderização no Canvas
+  const renderCanvas = useCallback(
+    (progress: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d', { alpha: true });
+      if (!ctx) return;
 
-  // Brilho dourado atrás da imagem (cresce entre p = 0.3 e 0.6)
-  const glowOpacity = useTransform(
-    smoothProgress,
-    [0.2, 0.35, 0.58, 0.75],
-    [0, 0.65, 0.65, 0.2]
+      const framePos = mapProgressToFrame(progress, TOTAL_FRAMES);
+      const floorIdx = Math.floor(framePos);
+      const ceilIdx = Math.min(TOTAL_FRAMES - 1, floorIdx + 1);
+      const frac = framePos - floorIdx;
+
+      const img1 = getNearestImage(floorIdx);
+      const img2 = getNearestImage(ceilIdx);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (img1) {
+        ctx.globalAlpha = 1.0;
+        ctx.drawImage(img1, 0, 0, canvas.width, canvas.height);
+      }
+
+      // Interpolação contínua entre frames vizinhos com globalAlpha
+      if (img2 && img2 !== img1 && frac > 0.002) {
+        ctx.globalAlpha = frac;
+        ctx.drawImage(img2, 0, 0, canvas.width, canvas.height);
+        ctx.globalAlpha = 1.0;
+      }
+    },
+    [getNearestImage]
   );
-  const glowScale = useTransform(smoothProgress, [0.2, 0.5, 0.8], [0.85, 1.15, 0.95]);
 
-  // Sincronia de texto das 3 etapas (apenas um visível por vez)
-  // Etapa 1: 0 a 0.22
-  const text1Opacity = useTransform(smoothProgress, [0, 0.02, 0.18, 0.22], [1, 1, 1, 0]);
-  const text1Y = useTransform(smoothProgress, [0, 0.18, 0.22], [0, 0, -16]);
+  // Redimensionamento do Canvas respeitando devicePixelRatio (mantendo 9:16 nítido)
+  const updateCanvasDimensions = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
 
-  // Etapa 2: 0.22 a 0.62
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetW = Math.round(rect.width * dpr);
+    const targetH = Math.round(rect.height * dpr);
+
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+    renderCanvas(smoothProgress.get());
+  }, [renderCanvas, smoothProgress]);
+
+  useEffect(() => {
+    updateCanvasDimensions();
+    window.addEventListener('resize', updateCanvasDimensions, { passive: true });
+    return () => window.removeEventListener('resize', updateCanvasDimensions);
+  }, [updateCanvasDimensions]);
+
+  // Carregamento progressivo de frames
+  useEffect(() => {
+    if (!isNear || shouldReduceMotion) return;
+
+    let isCancelled = false;
+
+    const loadSingleImage = async (index: number): Promise<HTMLImageElement | null> => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.src = getFrameUrl(index, isMobile);
+        if (img.decode) {
+          img
+            .decode()
+            .then(() => {
+              if (isCancelled) return resolve(null);
+              imagesRef.current[index] = img;
+              resolve(img);
+            })
+            .catch(() => {
+              img.onload = () => {
+                if (isCancelled) return resolve(null);
+                imagesRef.current[index] = img;
+                resolve(img);
+              };
+              img.onerror = () => resolve(null);
+            });
+        } else {
+          img.onload = () => {
+            if (isCancelled) return resolve(null);
+            imagesRef.current[index] = img;
+            resolve(img);
+          };
+          img.onerror = () => resolve(null);
+        }
+      });
+    };
+
+    const runProgressiveLoad = async () => {
+      // 1. Carrega o primeiro frame imediatamente para desenhar a cena
+      const first = await loadSingleImage(0);
+      if (first && !isCancelled) {
+        updateCanvasDimensions();
+        renderCanvas(smoothProgress.get());
+      }
+
+      // 2. Carrega os primeiros 25% (frames 1 a 29) em lotes
+      const firstQuarterPromises: Promise<HTMLImageElement | null>[] = [];
+      for (let i = 1; i < 30; i++) {
+        firstQuarterPromises.push(loadSingleImage(i));
+      }
+      await Promise.allSettled(firstQuarterPromises);
+      if (isCancelled) return;
+      renderCanvas(smoothProgress.get());
+
+      // 3. Carrega o restante (frames 30 a 119) em segundo plano
+      for (let i = 30; i < TOTAL_FRAMES; i++) {
+        if (isCancelled) break;
+        await loadSingleImage(i);
+        if (i % 12 === 0) {
+          renderCanvas(smoothProgress.get());
+        }
+      }
+      if (!isCancelled) {
+        renderCanvas(smoothProgress.get());
+      }
+    };
+
+    runProgressiveLoad();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isNear, isMobile, shouldReduceMotion, renderCanvas, smoothProgress, updateCanvasDimensions]);
+
+  // Listener para redesenhar o canvas no requestAnimationFrame sempre que smoothProgress mudar
+  useEffect(() => {
+    const unsubscribe = smoothProgress.on('change', (latest) => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        renderCanvas(latest);
+      });
+    });
+    return () => {
+      unsubscribe();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [smoothProgress, renderCanvas]);
+
+  // Glow dourado sutil: cresce entre 15% e 50% do progresso
+  const glowOpacity = useTransform(smoothProgress, [0, 0.15, 0.5, 0.85], [0, 0, 0.55, 0.4]);
+  const glowScale = useTransform(smoothProgress, [0.15, 0.5, 0.85], [0.9, 1.15, 1.0]);
+
+  // Barra de progresso vertical
+  const barScaleY = useTransform(smoothProgress, [0, 1], [0, 1]);
+
+  // Sincronia dos 3 textos de etapa (janelas p: 0–0.30, 0.30–0.72 e 0.72–1.0)
+  // Fade + 16px de deslocamento vertical; apenas um visível por vez
+  const text1Opacity = useTransform(smoothProgress, [0, 0.02, 0.25, 0.3], [1, 1, 1, 0]);
+  const text1Y = useTransform(smoothProgress, [0, 0.25, 0.3], [0, 0, -16]);
+
   const text2Opacity = useTransform(
     smoothProgress,
-    [0.21, 0.27, 0.57, 0.62],
+    [0.29, 0.34, 0.67, 0.72],
     [0, 1, 1, 0]
   );
   const text2Y = useTransform(
     smoothProgress,
-    [0.21, 0.27, 0.57, 0.62],
+    [0.29, 0.34, 0.67, 0.72],
     [16, 0, 0, -16]
   );
 
-  // Etapa 3: 0.62 a 1.0
-  const text3Opacity = useTransform(smoothProgress, [0.61, 0.68, 1], [0, 1, 1]);
-  const text3Y = useTransform(smoothProgress, [0.61, 0.68, 1], [16, 0, 0]);
-
-  // Barra de progresso vertical
-  const barScaleY = useTransform(smoothProgress, [0, 1], [0, 1]);
+  const text3Opacity = useTransform(smoothProgress, [0.71, 0.76, 1], [0, 1, 1]);
+  const text3Y = useTransform(smoothProgress, [0.71, 0.76, 1], [16, 0, 0]);
 
   const scrollToBento = () => {
     const el = document.getElementById('ficha-tecnica');
@@ -178,39 +300,48 @@ export const AnatomyStorytelling: React.FC = () => {
     }
   };
 
-  // Suporte a prefers-reduced-motion: exibe o estado final estático (frame 10) sem sticky
+  // Suporte a prefers-reduced-motion: exibe imagem estática (frame-090) com textos em sequência normal
   if (shouldReduceMotion) {
+    const staticFramePath = isMobile
+      ? '/frames/anatomia/mobile/frame-090.webp'
+      : '/frames/anatomia/frame-090.webp';
+
     return (
       <section
-        className="py-20 bg-gradient-to-b from-ivory via-[#F3E6DA] to-ivory grain-overlay"
+        id="anatomia"
+        className="py-20 relative grain-overlay"
+        style={{
+          background:
+            'linear-gradient(to bottom, #FBF6F2 0px, #C9BDB2 140px, #D8CDC2 calc(100% - 140px), #FBF6F2 100%)',
+        }}
         aria-label="Anatomia de um atendimento"
       >
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <span className="text-xs uppercase tracking-[0.18em] font-bold text-magenta mb-3 inline-block">
+          <span className="text-xs uppercase tracking-[0.2em] font-bold text-[#A97C25] mb-3 inline-block">
             ANATOMIA DE UM ATENDIMENTO
           </span>
-          <h2 className="font-serif text-3xl sm:text-4xl md:text-5xl font-medium text-plum leading-tight mb-8">
+          <h2 className="font-serif text-3xl sm:text-4xl md:text-5xl font-medium text-[#2B1220] leading-tight mb-8">
             Cada <span className="italic text-magenta font-semibold">camada</span> importa.
             Registre todas.
           </h2>
 
           <div className="relative max-w-sm mx-auto aspect-[9/16] rounded-2xl overflow-hidden shadow-rose-card my-8">
             <img
-              src={framePaths[TOTAL_FRAMES - 1]}
+              src={staticFramePath}
               alt="Anatomia da unha com alongamento F1, mostrando as camadas do atendimento"
               className="w-full h-full object-contain"
             />
           </div>
 
           <div className="max-w-xl mx-auto space-y-4 text-left mt-8">
-            <p className="text-sm sm:text-base text-plum font-semibold">
+            <p className="text-base text-[#2B1220] font-semibold">
               1. Uma unha. Várias decisões.
             </p>
-            <p className="text-sm sm:text-base text-muted">
+            <p className="text-base text-[#5E4A53]">
               2. Material, gel construtor, alongamento, esmalte e finish. Cada camada muda o
               resultado.
             </p>
-            <p className="text-sm sm:text-base text-plum font-medium">
+            <p className="text-base text-[#2B1220] font-medium">
               3. Na ficha técnica do NailGestão, você registra tudo isso e encontra no próximo
               atendimento.
             </p>
@@ -231,215 +362,214 @@ export const AnatomyStorytelling: React.FC = () => {
 
   return (
     <section
-      ref={containerRef}
-      className="relative h-[350vh] md:h-[450vh] bg-gradient-to-b from-ivory via-[#F3E6DA] to-ivory grain-overlay"
+      id="anatomia"
+      className="relative grain-overlay"
+      style={{
+        background:
+          'linear-gradient(to bottom, #FBF6F2 0px, #C9BDB2 140px, #D8CDC2 calc(100% - 140px), #FBF6F2 100%)',
+      }}
       aria-label="Scroll Storytelling da Anatomia da Unha"
     >
-      {/* Título principal que rola normalmente acima da sequência sticky */}
+      {/* Título principal que fica fora do sticky e rola normalmente acima da sequência */}
       <div className="pt-20 pb-10 sm:pt-28 sm:pb-14 px-4 sm:px-6 lg:px-8 max-w-5xl mx-auto text-center relative z-10">
-        <span className="text-xs uppercase tracking-[0.18em] font-bold text-magenta mb-3 inline-block">
+        <span className="text-xs uppercase tracking-[0.2em] font-bold text-[#A97C25] mb-3 inline-block">
           ANATOMIA DE UM ATENDIMENTO
         </span>
-        <h2 className="font-serif text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-medium text-plum leading-[1.1] tracking-tight">
+        <h2 className="font-serif text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-medium text-[#2B1220] leading-[1.1] tracking-tight">
           Cada <span className="italic text-magenta font-semibold">camada</span> importa.
           Registre todas.
         </h2>
+        <p className="mt-4 text-sm sm:text-base md:text-lg text-[#5E4A53] max-w-2xl mx-auto font-normal">
+          Do diagnóstico inicial ao acabamento final: cada etapa salva em detalhes para o próximo atendimento.
+        </p>
       </div>
 
-      {/* Elemento Sticky: mantém a composição centralizada durante o scroll */}
-      <div className="sticky top-0 h-[100svh] w-full overflow-hidden flex items-center justify-center z-20">
-        <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center">
-          <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-12 items-center h-full max-h-[92vh]">
-            {/* COLUNA ESQUERDA: Textos sincronizados por etapa e CTA (Desktop) */}
-            <div className="hidden lg:flex lg:col-span-5 flex-col justify-center relative min-h-[320px] pl-4">
-              <span className="text-[11px] font-bold uppercase tracking-widest text-gold-dark mb-4 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-gold" />
-                <span>Prontuário de Aplicação F1</span>
-              </span>
+      {/* Container de scroll storytelling (550vh desktop / 420vh mobile) */}
+      <div ref={containerRef} className="relative h-[420vh] lg:h-[550vh]">
+        {/* Elemento Sticky 100svh que fixa a composição durante a rolagem */}
+        <div className="sticky top-0 h-[100svh] w-full overflow-hidden flex items-center justify-center z-20">
+          <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-center">
+            {/* Estrutura responsiva única (Desktop em 2 colunas, Tablet/Mobile vertical) */}
+            <div className="w-full h-full flex flex-col lg:grid lg:grid-cols-12 gap-4 lg:gap-12 items-center justify-between lg:justify-center py-2 sm:py-4 lg:py-0 max-h-[96vh]">
+              
+              {/* COLUNA DE TEXTO NO DESKTOP (>= 1024px) */}
+              <div className="hidden lg:flex lg:col-span-5 flex-col justify-center relative min-h-[340px] pl-4">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-[#A97C25] mb-4 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-[#A97C25]" />
+                  <span>Prontuário de Aplicação F1</span>
+                </span>
 
-              {/* Contêiner de textos sobrepostos */}
-              <div className="relative min-h-[170px]">
-                {/* ETAPA 1 (p: 0 -> 0.22) */}
-                <motion.div
-                  style={{ opacity: text1Opacity, y: text1Y }}
-                  className="absolute inset-0 flex flex-col justify-start pointer-events-none"
-                >
-                  <span className="text-xs font-bold text-magenta/70 uppercase tracking-wider mb-2">
-                    ETAPA 01 · DIAGNÓSTICO
+                <div className="relative min-h-[190px]">
+                  {/* ETAPA 1 (p: 0 -> 0.30) */}
+                  <motion.div
+                    style={{ opacity: text1Opacity, y: text1Y }}
+                    className="absolute inset-0 flex flex-col justify-start pointer-events-none"
+                  >
+                    <span className="text-xs font-bold text-magenta/80 uppercase tracking-wider mb-2">
+                      ETAPA 01 · DIAGNÓSTICO
+                    </span>
+                    <p className="font-serif text-3xl xl:text-4xl font-semibold text-[#2B1220] leading-snug">
+                      Uma unha. Várias decisões.
+                    </p>
+                    <p className="text-sm text-[#5E4A53] mt-3 leading-relaxed">
+                      Da lâmina natural à borda livre, cada técnica exige produtos, nivelamento e
+                      tempos de cura específicos.
+                    </p>
+                  </motion.div>
+
+                  {/* ETAPA 2 (p: 0.30 -> 0.72) */}
+                  <motion.div
+                    style={{ opacity: text2Opacity, y: text2Y }}
+                    className="absolute inset-0 flex flex-col justify-start pointer-events-none"
+                  >
+                    <span className="text-xs font-bold text-magenta/80 uppercase tracking-wider mb-2">
+                      ETAPA 02 · ESTRUTURAÇÃO
+                    </span>
+                    <p className="font-serif text-2xl xl:text-3xl font-semibold text-[#2B1220] leading-snug">
+                      Material, gel construtor, alongamento, esmalte e finish. Cada camada muda o
+                      resultado.
+                    </p>
+                    <p className="text-sm text-[#5E4A53] mt-3 leading-relaxed">
+                      Quando a cliente retorna em 21 dias, você precisa lembrar com exatidão tudo
+                      o que usou para manter o mesmo padrão.
+                    </p>
+                  </motion.div>
+
+                  {/* ETAPA 3 (p: 0.72 -> 1.0) */}
+                  <motion.div
+                    style={{ opacity: text3Opacity, y: text3Y }}
+                    className="absolute inset-0 flex flex-col justify-start"
+                  >
+                    <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2">
+                      ETAPA 03 · REGISTRO DEFINITIVO
+                    </span>
+                    <p className="font-serif text-2xl xl:text-3xl font-semibold text-[#2B1220] leading-snug">
+                      Na ficha técnica do NailGestão, você registra tudo isso e encontra no
+                      próximo atendimento.
+                    </p>
+
+                    <div className="mt-6">
+                      <button
+                        type="button"
+                        onClick={scrollToBento}
+                        className="inline-flex items-center gap-2 text-sm font-bold text-magenta hover:text-magenta-dark group transition-colors focus:outline-none"
+                      >
+                        <span className="border-b-2 border-magenta/40 group-hover:border-magenta pb-0.5">
+                          Ver a ficha técnica
+                        </span>
+                        <ArrowDown className="w-4 h-4 transition-transform group-hover:translate-y-1" />
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+
+                {/* Marcadores de etapa com pontos dourados */}
+                <div className="flex items-center gap-4 mt-8 pt-6 border-t border-[#2B1220]/10">
+                  <span className="text-[11px] font-semibold text-[#5E4A53]">
+                    Abertura contínua de camadas
                   </span>
-                  <p className="font-serif text-3xl xl:text-4xl font-semibold text-plum leading-snug">
-                    Uma unha. Várias decisões.
-                  </p>
-                  <p className="text-sm text-muted mt-3 leading-relaxed">
-                    Da lâmina natural à borda livre, cada técnica exige produtos e tempos de
-                    cura específicos.
-                  </p>
-                </motion.div>
-
-                {/* ETAPA 2 (p: 0.22 -> 0.62) */}
-                <motion.div
-                  style={{ opacity: text2Opacity, y: text2Y }}
-                  className="absolute inset-0 flex flex-col justify-start pointer-events-none"
-                >
-                  <span className="text-xs font-bold text-magenta/70 uppercase tracking-wider mb-2">
-                    ETAPA 02 · ESTRUTURAÇÃO
-                  </span>
-                  <p className="font-serif text-2xl xl:text-3xl font-semibold text-plum leading-snug">
-                    Material, gel construtor, alongamento, esmalte e finish. Cada camada muda o
-                    resultado.
-                  </p>
-                  <p className="text-sm text-muted mt-3 leading-relaxed">
-                    Quando a cliente retorna em 21 dias, você precisa lembrar com exatidão o que
-                    usou.
-                  </p>
-                </motion.div>
-
-                {/* ETAPA 3 (p: 0.62 -> 1.0) */}
-                <motion.div
-                  style={{ opacity: text3Opacity, y: text3Y }}
-                  className="absolute inset-0 flex flex-col justify-start"
-                >
-                  <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider mb-2">
-                    ETAPA 03 · REGISTRO DEFINITIVO
-                  </span>
-                  <p className="font-serif text-2xl xl:text-3xl font-semibold text-plum leading-snug">
-                    Na ficha técnica do NailGestão, você registra tudo isso e encontra no
-                    próximo atendimento.
-                  </p>
-
-                  <div className="mt-6">
-                    <button
-                      type="button"
-                      onClick={scrollToBento}
-                      className="inline-flex items-center gap-2 text-sm font-bold text-magenta hover:text-magenta-dark group transition-colors focus:outline-none"
-                    >
-                      <span className="border-b-2 border-magenta/40 group-hover:border-magenta pb-0.5">
-                        Ver a ficha técnica
-                      </span>
-                      <ArrowDown className="w-4 h-4 transition-transform group-hover:translate-y-1" />
-                    </button>
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-[#A97C25]" />
+                    <span className="w-8 h-[1px] bg-[#A97C25]/40" />
+                    <span className="w-2 h-2 rounded-full bg-[#A97C25]" />
+                    <span className="w-8 h-[1px] bg-[#A97C25]/40" />
+                    <span className="w-2 h-2 rounded-full bg-[#A97C25]" />
                   </div>
-                </motion.div>
-              </div>
-
-              {/* Mini indicador de etapas com marcadores dourados */}
-              <div className="flex items-center gap-4 mt-8 pt-6 border-t border-magenta/10">
-                <span className="text-[11px] font-semibold text-muted">Abertura de camadas</span>
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-gold" />
-                  <span className="w-8 h-[1px] bg-gold/40" />
-                  <span className="w-2 h-2 rounded-full bg-gold" />
-                  <span className="w-8 h-[1px] bg-gold/40" />
-                  <span className="w-2 h-2 rounded-full bg-gold" />
                 </div>
               </div>
-            </div>
 
-            {/* COLUNA DIREITA: Composição da Imagem 9:16 + Glow Dourado + Barra Lateral */}
-            <div className="col-span-1 lg:col-span-7 flex items-center justify-center relative h-full">
-              {/* Brilho dourado/rosé dinâmico no fundo que reage à abertura das camadas */}
-              <motion.div
-                style={{
-                  opacity: glowOpacity,
-                  scale: glowScale,
-                }}
-                className="absolute w-[360px] sm:w-[480px] h-[360px] sm:h-[480px] rounded-full bg-gradient-to-tr from-gold/30 via-rose/30 to-magenta/25 blur-[90px] pointer-events-none -z-10"
-              />
+              {/* CONTAINER DO CANVAS (ÚNICO NO DOM) + BARRA E GLOW */}
+              <div className="relative flex items-center justify-center lg:col-span-7 w-full flex-1 lg:flex-initial overflow-hidden sm:overflow-visible">
+                {/* Glow dourado muito sutil atrás da imagem */}
+                <motion.div
+                  style={{
+                    opacity: glowOpacity,
+                    scale: glowScale,
+                  }}
+                  className="absolute w-[280px] sm:w-[380px] lg:w-[440px] h-[280px] sm:h-[380px] lg:h-[440px] rounded-full bg-gradient-to-tr from-[#A97C25]/30 via-[#E8A3B5]/25 to-magenta/20 blur-[80px] pointer-events-none -z-10"
+                />
 
-              {/* Barra de progresso vertical fina (2px) ao lado da imagem */}
-              <div className="hidden sm:flex flex-col items-center justify-between h-[60vh] max-h-[560px] mr-4 relative">
-                <div className="w-2 h-2 rounded-full bg-gold shadow-sm" />
-                <div className="relative w-[2px] flex-1 my-2 bg-magenta/15 rounded-full overflow-hidden">
-                  <motion.div
-                    style={{ scaleY: barScaleY }}
-                    className="absolute top-0 left-0 right-0 bottom-0 bg-gradient-to-b from-magenta via-rose to-gold origin-top"
+                {/* Barra de progresso vertical fina (2px) com gradiente magenta -> dourado (em telas sm e maiores) */}
+                <div className="hidden sm:flex flex-col items-center justify-between h-[60vh] sm:h-[64vh] lg:h-[65vh] max-h-[580px] mr-4 lg:mr-6 relative">
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#A97C25] shadow-sm z-10" />
+                  <div className="relative w-[2px] flex-1 my-2 bg-[#2B1220]/15 rounded-full overflow-hidden">
+                    <motion.div
+                      style={{ scaleY: barScaleY }}
+                      className="absolute top-0 left-0 right-0 bottom-0 bg-gradient-to-b from-magenta via-[#E8A3B5] to-[#A97C25] origin-top"
+                    />
+                  </div>
+                  <div className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-[#A97C25] shadow-sm z-10" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#A97C25] shadow-sm z-10" />
+                </div>
+
+                {/* Canvas único com máscara de degradê de 8% nas quatro bordas */}
+                <div className="relative flex items-center justify-center">
+                  <canvas
+                    ref={canvasRef}
+                    role="img"
+                    aria-label="Anatomia da unha com alongamento F1, mostrando as camadas do atendimento"
+                    style={{
+                      WebkitMaskImage:
+                        'linear-gradient(to right, transparent, black 8%, black 92%, transparent), linear-gradient(to bottom, transparent, black 8%, black 92%, transparent)',
+                      WebkitMaskComposite: 'source-in',
+                      maskImage:
+                        'linear-gradient(to right, transparent, black 8%, black 92%, transparent), linear-gradient(to bottom, transparent, black 8%, black 92%, transparent)',
+                      maskComposite: 'intersect',
+                    }}
+                    className="w-full max-w-[100vw] sm:max-w-[340px] lg:max-w-[420px] aspect-[9/16] max-h-[calc(100svh-230px)] sm:max-h-[64vh] lg:max-h-[88vh] object-contain block select-none pointer-events-none"
                   />
                 </div>
-                <div className="w-2 h-2 rounded-full bg-gold shadow-sm" />
               </div>
 
-              {/* Wrapper da sequência de 10 frames */}
-              <motion.div
-                style={{ scale }}
-                className="relative w-full max-w-[320px] sm:max-w-[360px] lg:max-w-[400px] aspect-[9/16] max-h-[86vh] flex items-center justify-center overflow-hidden"
-              >
-                {/* Efeito de Máscara Suave e Vinheta para fundir as bordas ao fundo sem corte reto */}
-                <div
-                  className="relative w-full h-full flex items-center justify-center"
-                  style={{
-                    WebkitMaskImage:
-                      'radial-gradient(ellipse at center, black 68%, rgba(0,0,0,0.85) 82%, transparent 98%)',
-                    maskImage:
-                      'radial-gradient(ellipse at center, black 68%, rgba(0,0,0,0.85) 82%, transparent 98%)',
-                  }}
-                >
-                  {/* Shimmer suave enquanto o primeiro frame carrega */}
-                  {!firstLoaded && (
-                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer" />
-                  )}
+              {/* TEXTO DA ETAPA NO TABLET E MOBILE (< 1024px) */}
+              <div className="lg:hidden w-full px-4 shrink-0 z-30 mb-20 sm:mb-6">
+                {/* Mobile: Cartão de Vidro Fosco claro com texto >= 16px */}
+                <div className="glass-card p-4 rounded-2xl border border-magenta/20 shadow-rose-soft bg-white/85 backdrop-blur-md max-w-md mx-auto">
+                  <div className="relative min-h-[64px] flex items-center justify-center text-center">
+                    <motion.div
+                      style={{ opacity: text1Opacity, y: text1Y }}
+                      className="absolute inset-0 flex flex-col justify-center items-center pointer-events-none"
+                    >
+                      <p className="font-serif text-base font-bold text-[#2B1220] leading-snug">
+                        Uma unha. Várias decisões.
+                      </p>
+                      <span className="text-xs text-[#5E4A53] mt-0.5">
+                        Cada camada muda o resultado final.
+                      </span>
+                    </motion.div>
 
-                  {/* 10 Frames empilhados em absolute */}
-                  {framePaths.map((src, idx) => (
-                    <FrameLayer
-                      key={src}
-                      index={idx}
-                      smoothProgress={smoothProgress}
-                      imageSrc={src}
-                      isFirst={idx === 0}
-                      onLoaded={idx === 0 ? () => setFirstLoaded(true) : undefined}
-                    />
-                  ))}
-                </div>
+                    <motion.div
+                      style={{ opacity: text2Opacity, y: text2Y }}
+                      className="absolute inset-0 flex flex-col justify-center items-center pointer-events-none"
+                    >
+                      <p className="font-serif text-base font-bold text-[#2B1220] leading-snug">
+                        Material, gel construtor, esmalte e finish.
+                      </p>
+                      <span className="text-xs text-[#5E4A53] mt-0.5">
+                        Cada detalhe salvo para a manutenção de 21 dias.
+                      </span>
+                    </motion.div>
 
-                {/* Cartão de Vidro Fosco sobreposto no Mobile (< 768px) */}
-                <div className="lg:hidden absolute bottom-3 left-3 right-3 z-30 pointer-events-auto">
-                  <div className="glass-card p-4 rounded-2xl border border-magenta/20 shadow-rose-soft bg-white/80 backdrop-blur-md">
-                    {/* Texto alternado dinamicamente no mobile */}
-                    <div className="relative min-h-[64px] flex items-center">
-                      <motion.div
-                        style={{ opacity: text1Opacity }}
-                        className="absolute inset-0 flex flex-col justify-center"
+                    <motion.div
+                      style={{ opacity: text3Opacity, y: text3Y }}
+                      className="absolute inset-0 flex flex-col justify-center items-center"
+                    >
+                      <p className="font-serif text-base font-bold text-[#2B1220] leading-snug">
+                        Ficha técnica do NailGestão PRO.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={scrollToBento}
+                        className="text-xs font-bold text-magenta inline-flex items-center gap-1 mt-1"
                       >
-                        <p className="font-serif text-base font-bold text-plum leading-snug">
-                          Uma unha. Várias decisões.
-                        </p>
-                        <span className="text-[11px] text-muted">
-                          Cada camada muda o resultado final.
-                        </span>
-                      </motion.div>
-
-                      <motion.div
-                        style={{ opacity: text2Opacity }}
-                        className="absolute inset-0 flex flex-col justify-center"
-                      >
-                        <p className="font-serif text-sm font-bold text-plum leading-snug">
-                          Material, gel, alongamento e finish.
-                        </p>
-                        <span className="text-[11px] text-muted">
-                          Cada detalhe influencia a durabilidade.
-                        </span>
-                      </motion.div>
-
-                      <motion.div
-                        style={{ opacity: text3Opacity }}
-                        className="absolute inset-0 flex flex-col justify-center"
-                      >
-                        <p className="font-serif text-sm font-bold text-plum leading-snug">
-                          Registre na ficha técnica do NailGestão.
-                        </p>
-                        <button
-                          type="button"
-                          onClick={scrollToBento}
-                          className="text-[11px] font-bold text-magenta inline-flex items-center gap-1 mt-1"
-                        >
-                          <span>Ver a ficha técnica</span>
-                          <ArrowDown className="w-3 h-3" />
-                        </button>
-                      </motion.div>
-                    </div>
+                        <span>Ver a ficha técnica</span>
+                        <ArrowDown className="w-3.5 h-3.5" />
+                      </button>
+                    </motion.div>
                   </div>
                 </div>
-              </motion.div>
+              </div>
+
             </div>
           </div>
         </div>
