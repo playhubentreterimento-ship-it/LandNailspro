@@ -40,7 +40,7 @@ export const PRICING_PLANS: Plan[] = [
       'Suporte direto por WhatsApp',
     ],
     ctaText: 'Começar 7 dias grátis',
-    ctaLink: 'https://gestaoparameusalao.vercel.app/onboarding?plan=iniciante',
+    ctaLink: 'https://app.gestaoestronda.com.br/onboarding?plan=iniciante',
   },
   {
     id: 'pro',
@@ -63,7 +63,7 @@ export const PRICING_PLANS: Plan[] = [
       'Pacotes personalizados ilimitados',
     ],
     ctaText: 'Testar 7 dias sem compromisso',
-    ctaLink: 'https://gestaoparameusalao.vercel.app/onboarding?plan=pro',
+    ctaLink: 'https://app.gestaoestronda.com.br/onboarding?plan=pro',
   },
   {
     id: 'gold',
@@ -85,7 +85,7 @@ export const PRICING_PLANS: Plan[] = [
       'Suporte VIP prioritário',
     ],
     ctaText: 'Escolher Studio Gold',
-    ctaLink: 'https://gestaoparameusalao.vercel.app/onboarding?plan=gold',
+    ctaLink: 'https://app.gestaoestronda.com.br/onboarding?plan=gold',
   },
 ];
 

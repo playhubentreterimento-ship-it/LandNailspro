@@ -1,13 +1,13 @@
 // Arquivo central de textos e links editáveis do NailGestão PRO 1.1
 
 export const APP_LINKS = {
-  onboarding: 'https://gestaoparameusalao.vercel.app/onboarding',
-  login: 'https://gestaoparameusalao.vercel.app/login',
-  publicBooking: 'https://gestaoparameusalao.vercel.app/agendar',
+  onboarding: 'https://app.gestaoestronda.com.br/onboarding',
+  login: 'https://app.gestaoestronda.com.br/login',
+  publicBooking: 'https://app.gestaoestronda.com.br/agendar',
   plans: {
-    solo: 'https://gestaoparameusalao.vercel.app/onboarding?plan=iniciante',
-    pro: 'https://gestaoparameusalao.vercel.app/onboarding?plan=pro',
-    gold: 'https://gestaoparameusalao.vercel.app/onboarding?plan=gold',
+    solo: 'https://app.gestaoestronda.com.br/onboarding?plan=iniciante',
+    pro: 'https://app.gestaoestronda.com.br/onboarding?plan=pro',
+    gold: 'https://app.gestaoestronda.com.br/onboarding?plan=gold',
   },
   youtubeVideoId: 'gwLrje8vuVU',
 };
